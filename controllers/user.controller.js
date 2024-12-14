@@ -4,19 +4,22 @@ import {User} from "../models/user.model.js"
 import {apiError} from "../utils/apiErrors.js"
 import {uploadOnCloudinary} from "../utils/cloudinary.js"
 import {apiResponse} from "../utils/apiResponse.js"
+import jwt from "jsonwebtoken"
 
 //Method that returns tokens...
 
 const generateAccessAndRefreshToken = async(UserId)=>{
     try {
-        const user =await User.find(UserId)
-        const refreshToken = generateRefreshToken()
-        const accessToken = generateAccessToken()
+        const user =await User.findById(UserId)
+        const refreshToken = user.generateRefreshToken()
+        const accessToken = user.generateAccessToken()
         user.refreshToken = refreshToken
+        
         //to save in db... 
         await user.save({validateBeforeSave : false})
         return {accessToken, refreshToken}
     } catch (error) {
+        console.log(error);
         throw new apiError(500, "something went wrong");
     }
 }
@@ -79,7 +82,8 @@ export const registerUser = asyncHandler( async(req, res)=>{
 export const loginUser= asyncHandler( async(req, res, err)=>{
     //req body->data
     const {email, username, password} = req. body
-    if(!email|| !username){
+    
+    if(!email && !username){
         throw new apiError(400, "email or password is required")
     }
     //username or email
@@ -98,6 +102,7 @@ export const loginUser= asyncHandler( async(req, res, err)=>{
     }
 
     //tokens
+    // console.log(`expiryDate : is ${process.env.REFRESH_TOKEN_EXPIRY}`);   
     const {accessToken, refreshToken} = await generateAccessAndRefreshToken(user._id)
     const loggedInUser = await User.findById(user._id).select("-password -refreshToken")
 
@@ -124,11 +129,11 @@ export const logoutUser = asyncHandler(async(req, res, err)=>{
     await User.findByIdAndUpdate(
         req.user._id,
         {
-            $set:[{refreshToken : undefined}]
+            $set:{refreshToken : undefined}
         },
-        // {
-        //     new: true
-        // }
+        {
+            new: true
+        }
     )
     // delete cookies
     const options ={
@@ -139,4 +144,33 @@ export const logoutUser = asyncHandler(async(req, res, err)=>{
     .clearCookie("accessToken" , options)
     .clearCookie("refreshToken" , options)
     .json(new apiResponse(200, {}, "Logged out successfully"))
+})
+
+export const generateNewRefreshToken = asyncHandler(async(req, res)=>{
+    try {
+        const incomingToken = req.cookies?.refreshToken || req.body.refreshToken
+        if(!incomingToken){
+            throw new apiError(400, "Unauthorized request error")
+        }
+        const decodedToken = verify.jwt(incomingToken, process.env.REFRESH_TOKEN_SECRET)
+        const user = await User.findById(decodedToken._id) 
+        if(!user){
+            throw new apiError(401, "Invalid Refresh Token")
+        }
+        if(decodedToken !== user?.refreshToken){
+            throw new apiError(401, "Token has expired")    
+        }
+    
+        const {accessToken, newrefreshToken} = await generateAccessAndRefreshToken(user._id)
+        const options:{
+            httpOnly:true,
+            secure:true
+        }
+        return res.status(200)
+        .cookie("accessToken", accessToken, options)
+        .cookie("refreshToken", newrefreshToken, options)
+        .json(new apiResponse(200, {accessToken, refreshToken : newrefreshToken} ))
+    } catch (error) {
+        throw new apiError(401, error.message || "Invalid Refresh Token")
+    }
 })
