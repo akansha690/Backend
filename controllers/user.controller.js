@@ -81,7 +81,7 @@ export const registerUser = asyncHandler( async(req, res)=>{
 
 export const loginUser= asyncHandler( async(req, res, err)=>{
     //req body->data
-    const {email, username, password} = req. body
+    const {email, username, password} = req.body
     
     if(!email && !username){
         throw new apiError(400, "email or password is required")
