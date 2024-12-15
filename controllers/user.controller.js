@@ -5,9 +5,9 @@ import {apiError} from "../utils/apiErrors.js"
 import {uploadOnCloudinary} from "../utils/cloudinary.js"
 import {apiResponse} from "../utils/apiResponse.js"
 import jwt from "jsonwebtoken"
+import mongoose from "mongoose"
 
 //Method that returns tokens...
-
 const generateAccessAndRefreshToken = async(UserId)=>{
     try {
         const user =await User.findById(UserId)
@@ -102,7 +102,7 @@ export const loginUser= asyncHandler( async(req, res, err)=>{
     }
 
     //tokens
-    // console.log(`expiryDate : is ${process.env.REFRESH_TOKEN_EXPIRY}`);   
+  
     const {accessToken, refreshToken} = await generateAccessAndRefreshToken(user._id)
     const loggedInUser = await User.findById(user._id).select("-password -refreshToken")
 
@@ -132,11 +132,11 @@ export const logoutUser = asyncHandler(async(req, res, err)=>{
             $set:{refreshToken : undefined}
         },
         {
-            new: true
+            new: true  //updated info is returned
         }
     )
     // delete cookies
-    const options ={
+    const options = {
         httpOnly:true,
         secure: true
     }
@@ -152,20 +152,22 @@ export const generateNewRefreshToken = asyncHandler(async(req, res)=>{
         if(!incomingToken){
             throw new apiError(400, "Unauthorized request error")
         }
-        const decodedToken = verify.jwt(incomingToken, process.env.REFRESH_TOKEN_SECRET)
-        const user = await User.findById(decodedToken._id) 
+        const decodedToken = jwt.verify(incomingToken, process.env.REFRESH_TOKEN_SECRET)
+        const user = await User.findById(decodedToken?._id) 
         if(!user){
             throw new apiError(401, "Invalid Refresh Token")
         }
-        if(decodedToken !== user?.refreshToken){
+        if(incomingToken !== user?.refreshToken){
             throw new apiError(401, "Token has expired")    
         }
     
         const {accessToken, newrefreshToken} = await generateAccessAndRefreshToken(user._id)
-        const options:{
-            httpOnly:true,
-            secure:true
+
+        const options = {
+            httpOnly : true,
+            secure : true
         }
+
         return res.status(200)
         .cookie("accessToken", accessToken, options)
         .cookie("refreshToken", newrefreshToken, options)
@@ -173,4 +175,203 @@ export const generateNewRefreshToken = asyncHandler(async(req, res)=>{
     } catch (error) {
         throw new apiError(401, error.message || "Invalid Refresh Token")
     }
+})
+
+export const changeCurrentPassword = asyncHandler(async(req, res)=>{
+    const {oldPassword, newPassword} = req.body
+    const user = await User.findById(req.user?._id)
+    const verifyPassword = await user.isPasswordCorrect(oldPassword)
+    if(!verifyPassword){
+        throw new apiError(402, "Incorrect password")
+    }
+    user.password = newPassword
+    await user.save({validateBeforeSave: false})
+    return res.status(200)
+    .json(new apiResponse(200, {}, "Password has changed"))
+})
+
+export const getCurrentUser = asyncHandler(async(req, res)=>{ 
+    const user = await User.findById(req.user?._id)
+    res.status(200)
+    .json(new apiResponse(200, user, "User fetched successfully"))
+})
+
+export const updateAccountDetails = asyncHandler(async(req, res)=>{
+    const {fullname, username, email} = req.body
+    if(!username || !fullname || !email){
+        throw new apiError(401, "All fields are required")
+    }
+    const user = await User.findById(req.user?._id).select("-password")
+    user.fullname= fullname
+    user.email =email
+    user.username = username
+    await user.save({validateBeforeSave: false})
+    return res.status(200)
+    .json(new apiResponse(200, user, "Details updated successfully"))
+
+})
+
+export const updateAvatar = asyncHandler(async(req, res)=>{
+    const avatarLocalPath = req.file?.path
+    if(!avatarLocalPath){
+        throw new apiError(401,"Avatar file not found")
+    }
+    const avatar = await uploadOnCloudinary(avatarLocalPath)
+    if(!avatar.url){
+        throw new apiError(401,"Error while uploading on cloudinary")
+    }
+    const user = await User.findByIdAndUpdate(
+        req.user?._id,
+        {
+            $set:{avatar : avatar?.url} 
+        },
+        {
+            new: true
+        }.select("-password")
+    )
+    return res.status(200)
+    .json(new apiResponse(200, user, "Avatar updated successfully"))
+})
+
+export const updatecoverImage = asyncHandler(async(req, res)=>{
+    const coverImageLocalPath = req.file?.path
+    if(!coverImageLocalPath){
+        throw new apiError(401,"coverImage file not found")
+    }
+    const coverImage = await uploadOnCloudinary(coverImageLocalPath)
+    if(!coverImage.url){
+        throw new apiError(401,"Error while uploading on cloudinary")
+    }
+    const user = await User.findByIdAndUpdate(
+        req.user?._id,
+        {
+            $set:{coverImage : coverImage?.url} 
+        },
+        {
+            new: true
+        }.select("-password")
+    )
+    return res.status(200)
+    .json(new apiResponse(200, user, "coverImage updated successfully"))
+})
+
+export const getUserChannelProfile = asyncHandler(async(req, res)=>{
+
+    const {username} = req.params
+    if(!username?.trim()){
+        throw new apiError(400, "Username is missing")
+    }
+    //aggregate pipelines......
+    const channel = await User.aggregate([
+        {
+            $match:{ //to find documents
+                username: username?.toLowerCase()
+            }
+        },   
+        {
+            //to find subscribers
+            $lookup:{
+                from:"subscriptions",  //Subscription in mongodb saved as subscriptions
+                localField: "_id",
+                foreignField:"channel",
+                as:"subscribers"
+            }
+        },
+        {    
+            //to find subscribedTo
+            $lookup:{ 
+                from:"subscriptions",  //Subscription in mongodb saved as subscriptions
+                localField: "_id",
+                foreignField:"subscriber",
+                as:"subscribedTo"
+            }
+        },
+        {    
+            //add both these fields in user model.
+            $addFields:{
+                subscriberCount:{
+                    $size:"$subscribers"
+                },
+                subscribedToCount:{
+                    $size:"$subscribedTo"
+                },
+                //flag to know if you have subscribed to a channel or not.
+                isSubscribed:{
+                    $cond:{
+                        if:{$in : [req.user?._id , "$subscribers.subscriber"]},
+                        then:true,
+                        else:false
+                    }
+                }
+            }
+        },    
+        {
+            $project:{
+                fullname:1,
+                email:1,
+                username:1,
+                avatar:1,
+                coverImage:1,
+                subscriberCount:1,
+                subscribedToCount:1,
+                isSubscribed:1,
+                
+            }
+        }    
+    ])  // returns an array
+    if(!channel?.length){
+        throw new apiError(404, "Channel doesnot exists")
+    }
+
+    return res.status(200)
+    .json(new apiResponse(200, channel[0], "User channel fetched successfully"))
+})
+
+export const getUserWatchHistory = asyncHandler(async(req, res)=>{
+
+    const user = await User.aggregate([
+        {
+            $match:{
+                _id : new mongoose.Types.ObjectId(req.user._id)
+            }
+        },
+        {
+            $lookup:{
+                from: "videos",
+                localField:"watchHistory",
+                foreignField:"_id",
+                as:"watchHistory",
+                pipeline:[
+                    //this subpipelines will return owner as array
+                    {
+                        $lookup:{
+                            from: "users",
+                            localField:"owner",
+                            foreignField:"_id",
+                            as:"owner",
+                            pipeline:[
+                                {
+                                    $project:{
+                                        fullname:1,
+                                        email:1,
+                                        avatar:1
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        $addFields:{
+                            owner:{
+                                $first:"$owner"  //will return 1st element of array ie object with fullname, email, avatar.
+                            }
+                        }
+                    }
+                ] 
+            }
+        },
+        
+    ])
+    return res.status(200)
+    .json(new apiResponse(200, user[0].watchHistory, "Watch history fetched successfully"))
 })
