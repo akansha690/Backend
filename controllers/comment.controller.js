@@ -18,6 +18,7 @@ export const addComment = asyncHandler(async (req, res) => {
     // TODO: add a comment to a video
     const {content} = req.body
     const {videoId} = req.params
+    const user = req.user._id
     if(!content){
         throw new apiError(400, "content is required")
     }
@@ -32,10 +33,19 @@ export const addComment = asyncHandler(async (req, res) => {
     }
     const commentObj = await Comment.create({
         content: content,
-        video: videoTocomment?._id,
-        owner: videoTocomment?._id 
+        video: videoTocomment,
+        owner: user 
     })
-    const comment= await Comment.findById(commentObj._id)
+    const comment = await Comment.findById(commentObj._id).populate([
+        {           
+            path:"owner",
+            select : "fullname"  
+        },
+        {
+            path: "video",
+            select:"title"
+        }
+    ])
 
     if(!comment){
         throw new apiError(400, "Comment is not found")
